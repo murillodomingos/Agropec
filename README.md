@@ -11,7 +11,7 @@ Mercado futuro a média de predições do mercado para o preço do boi.
 
 [BGI](https://www.b3.com.br/pt_br/market-data-e-indices/servicos-de-dados/market-data/historico/derivativos/ajustes-do-pregao/)
 
-> investigar a qualidade das predições do mercado futuro e sua variabilidade por:
+> Investigar a qualidade das predições do mercado futuro e sua variabilidade por:
 - horizonte
 - meses do ano
 
@@ -20,7 +20,7 @@ Mercado futuro a média de predições do mercado para o preço do boi.
 
 ## Etapa 2
 
-investigar a correlação de diferentes fatores com essas predições.
+Investigar a correlação de diferentes fatores com essas predições.
 
 exemplos incluem:
 > abates totais
