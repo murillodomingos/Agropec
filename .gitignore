@@ -2,6 +2,8 @@
 data/00--raw/*
 data/01--processed/*
 
+data/10--derived/*
+
 # Experiments
 experiments/*
 !experiments/*/README.md
