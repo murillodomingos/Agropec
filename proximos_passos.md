@@ -15,3 +15,4 @@ seleciona as variáveis mais relacionadas.
 LEMBRAR do LAG
 
 [sheets preços coletados](https://docs.google.com/spreadsheets/d/1RhK6jE6Hyu3N4OnKIas--3rcF3tDaZ4ICF-7Eo-9KG4/edit?gid=1283251155#gid=1283251155)
+

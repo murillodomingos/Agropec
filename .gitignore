@@ -3,6 +3,7 @@ data/00--raw/*
 data/01--processed/*
 
 data/10--derived/*
+data/01--grouped/*
 
 # Experiments
 experiments/*

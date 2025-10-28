@@ -1,26 +1,84 @@
-from __future__ import annotations
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import List, Tuple, Optional
+from pathlib import Path
 import os
-from typing import *
-from bcb import sgs
-from datetime import datetime
+
 import pandas as pd
+from bcb import sgs
 
 from src.data.utils import get_raw_dir
 
 
+
+def _to_dt(x: Optional[str | datetime]) -> datetime:
+    if x is None:
+        return datetime.today()
+    if isinstance(x, datetime):
+        return x
+    return datetime.strptime(x, "%Y-%m-%d")
+
+
+def _iter_year_chunks(start: datetime, end: datetime, years_per_chunk: int = 10):
+    """
+    Yield inclusive (chunk_start, chunk_end) pairs covering [start, end],
+    each chunk spanning at most `years_per_chunk` years.
+    """
+    cur_start = start
+    while cur_start <= end:
+        try:
+            tentative_end = cur_start.replace(year=cur_start.year + years_per_chunk)
+        except ValueError:
+            tentative_end = cur_start + (datetime(cur_start.year + years_per_chunk, 3, 1) - datetime(cur_start.year, 3, 1))
+        chunk_end = min(tentative_end - timedelta(days=1), end)
+        yield cur_start, chunk_end
+        cur_start = chunk_end + timedelta(days=1)
+
+
+def _fetch_series_chunked(
+    name: str,
+    code: int,
+    start: datetime,
+    end: datetime,
+) -> pd.DataFrame:
+    """
+    Fetch a (name, code) series from BCB in ≤10y chunks and concatenate the results.
+    Returns a DataFrame with columns ['Date', name] (Date as datetime64[ns]).
+    """
+    frames: List[pd.DataFrame] = []
+    for cstart, cend in _iter_year_chunks(start, end, years_per_chunk=10):
+        try:
+            df = sgs.get((name, code), start=cstart.strftime("%Y-%m-%d"), end=cend.strftime("%Y-%m-%d"))
+        except Exception as e:
+            print(f"Error fetching data for {name} ({code}) from {cstart.date()} to {cend.date()}: {e}")
+            continue
+        if df is None or df.empty:
+            continue
+        df = df.reset_index().rename(columns={"index": "Date"})  # Date in first column
+        df = df[["Date", name]]
+        frames.append(df)
+
+    if not frames:
+        return pd.DataFrame(columns=["Date", name])
+
+    out = pd.concat(frames, axis=0, ignore_index=True)
+    out = out.drop_duplicates(subset=["Date"], keep="last")
+    out["Date"] = pd.to_datetime(out["Date"])
+    out = out.sort_values("Date").reset_index(drop=True)
+    return out
+
+
+
 @dataclass
 class BRGovAPI:
-    def __init__(self, csv_path: str):
-        self.csv_path = csv_path
+    parquet_path: str
 
-
-    def save_indexes_csv(
-            self,
-            series_codes: List[Tuple[str, int]], 
-            start_date=None, 
-            last_date=None
-            ):
+    def save_indexes_parquet(
+        self,
+        series_codes: List[Tuple[str, int]],
+        start_date: Optional[str | datetime] = None,
+        last_date: Optional[str | datetime] = None,
+    ) -> None:
         """
         Example:
         series_codes = [
@@ -28,49 +86,61 @@ class BRGovAPI:
             ("ipca", 433),
         ]
         """
+        os.makedirs(os.path.dirname(str(self.parquet_path)), exist_ok=True)
 
-        os.makedirs(os.path.dirname(self.csv_path), exist_ok=True)
+        start_dt = _to_dt(start_date) if start_date is not None else datetime(2010, 1, 1)
+        end_dt = _to_dt(last_date) if last_date is not None else datetime.today()
 
-        if last_date is None:
-            last_date = datetime.today().strftime('%Y-%m-%d')
-
-        combined_data = pd.DataFrame()
+        combined: Optional[pd.DataFrame] = None
 
         for name, code in series_codes:
-            try:
-                new_data = sgs.get((name, code), start=start_date, end=last_date)
-            except Exception as e:
-                print(f"Error fetching data for {name} ({code}): {e}")
+            series_df = _fetch_series_chunked(name, code, start_dt, end_dt)
+            if series_df.empty:
+                print(f"No data fetched for {name} ({code}).")
                 continue
 
-            if not new_data.empty:
-                new_data.reset_index(inplace=True)
-                new_data.rename(columns={'index': 'Date'}, inplace=True)
-
-                if 'Date' not in combined_data.columns:
-                    combined_data = new_data[['Date', name]]
-                else:
-                    combined_data = combined_data.merge(new_data[['Date', name]], on='Date', how='outer')
+            if combined is None:
+                combined = series_df
             else:
-                print(f"No data fetched for {name} ({code}).")
+                combined = combined.merge(series_df, on="Date", how="outer")
 
-        if not combined_data.empty:
-            combined_data.to_csv(self.csv_path, index=False)
-            print(f'Saved: {self.csv_path}')
+        if combined is None or combined.empty:
+            print("No data was fetched. parquet file was not updated.")
+            return
+
+        combined = combined.sort_values("Date").reset_index(drop=True)
+
+        parquet_path = Path(self.parquet_path)
+        if parquet_path.exists():
+            try:
+                existing = pd.read_parquet(parquet_path)
+                if "Date" in existing.columns:
+                    existing["Date"] = pd.to_datetime(existing["Date"])
+                else:
+                    existing = pd.DataFrame(columns=["Date"])
+                merged = existing.merge(combined, on="Date", how="outer")
+                merged = merged.sort_values("Date").reset_index(drop=True)
+                merged.to_parquet(parquet_path, index=False)
+                print(f"Updated (merged) parquet: {parquet_path}")
+            except Exception as e:
+                print(f"Error merging with existing parquet; writing fresh file instead. Detail: {e}")
+                combined.to_parquet(parquet_path, index=False)
+                print(f"Saved: {parquet_path}")
         else:
-            print("No data was fetched. CSV file was not updated.")
+            combined.to_parquet(parquet_path, index=False)
+            print(f"Saved: {parquet_path}")
 
 
 
 def main():
-    parent = get_raw_dir() / "gov"
-    index_csv = parent / "gov.csv"
+    parent = get_raw_dir()
+    index_parquet = parent / "parquet" /"gov.parquet"
 
-    start_date = "2015-01-01"
+    start_date = "2010-01-01"
     last_date  = "2025-01-01"
 
-    api = BRGovAPI(csv_path=index_csv)
-    api.save_indexes_csv(series_codes, start_date, last_date=last_date)
+    api = BRGovAPI(parquet_path=str(index_parquet))
+    api.save_indexes_parquet(series_codes, start_date=start_date, last_date=last_date)
 
 
 
